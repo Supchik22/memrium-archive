@@ -1,0 +1,15 @@
+[package]
+name = "memrium-archive"
+version = "0.1.0"
+edition = "2021"
+description = "Browse, extract and create zip, tar, 7z and other archives."
+license = "MIT"
+repository = "https://github.com/Supchik22/memrium-archive"
+
+[[bin]]
+name = "memrium_archive"
+path = "src/main.rs"
+
+[dependencies]
+chebrium = { git = "https://github.com/Supchik22/chebrium" }
+memrium-de = { git = "https://github.com/Supchik22/memrium" }
