@@ -9,6 +9,7 @@ use chebrium::app::{self, App, Config, Host};
 use chebrium::draw::Align;
 use chebrium::input::{Key, KeyMods};
 use chebrium::ui::{inside, Ui};
+use chebrium::widgets::{self, fit};
 use memrium_de::archive::{self, Entry, Format, Progress, Summary, CREATE};
 use memrium_de::fsops::{self, human_size};
 use std::collections::BTreeMap;
@@ -27,7 +28,6 @@ const HEAD_H: f32 = 84.0;
 const COLS_H: f32 = 34.0;
 const ROW_H: f32 = 32.0;
 const BAR_H: f32 = 92.0;
-const SCROLL_KEY: u64 = 90_000;
 
 enum Mode {
     /// nothing was asked for
@@ -299,17 +299,6 @@ fn size_of(p: &Path) -> u64 {
     }
 }
 
-fn fit(ui: &mut Ui<'_>, text: &str, size: f32, bold: bool, max: f32) -> String {
-    if ui.measure_raw(text, size, bold) <= max {
-        return text.to_string();
-    }
-    let mut s = text.to_string();
-    while !s.is_empty() && ui.measure_raw(&format!("{s}…"), size, bold) > max {
-        s.pop();
-    }
-    format!("{s}…")
-}
-
 /// What the window looks like: an opaque page with cards on it (the glass of the other windows made the text hard to read
 /// over a busy wallpaper).
 fn page_color(dark: bool) -> [f32; 3] {
@@ -440,27 +429,14 @@ impl ArchiveApp {
         card(ui, card_r, 14.0);
         let list = [card_r[0] + 1.0, card_r[1] + COLS_H, card_r[2] - 2.0, card_r[3] - COLS_H - 6.0];
         let n = self.rows.len();
-        let max_scroll = (n as f32 * ROW_H + 8.0 - list[3]).max(0.0);
-        if ui.scroll != 0.0 && inside(ui.mouse, list) {
-            self.scroll += ui.scroll;
-        }
-        self.scroll = self.scroll.clamp(0.0, max_scroll);
-        let scroll = ui.ease(SCROLL_KEY, self.scroll, 18.0);
-        let first = (scroll / ROW_H).floor().max(0.0) as usize;
-        let last = (((scroll + list[3]) / ROW_H).ceil() as usize + 1).min(n);
         let (mut open_dir, mut clicked_row) = (None, false);
-        ui.push_clip(list);
-        for i in first..last {
+        let area = widgets::scroll_area(ui, list, n as f32 * ROW_H + 8.0, &mut self.scroll);
+        for i in area.rows(ROW_H, n) {
             let row = self.rows[i].clone();
-            let r = [list[0] + 6.0, list[1] - scroll + 4.0 + i as f32 * ROW_H, list[2] - 12.0, ROW_H - 2.0];
-            let hov = ui.hit(r) && inside(ui.mouse, list);
+            let r = [list[0] + 6.0, area.y(4.0 + i as f32 * ROW_H), list[2] - 12.0, ROW_H - 2.0];
+            let hov = area.hit(ui, r);
             let selected = self.sel.contains(&row.full);
-            let wash = ui.ease(30_000 + i as u64, if hov { 1.0 } else { 0.0 }, 22.0);
-            if selected {
-                ui.fill(r, 8.0, accent, 0.26);
-            } else if wash > 0.01 {
-                ui.fill(r, 8.0, ink, 0.07 * wash);
-            }
+            widgets::list_row(ui, r, 8.0, 30_000 + i as u64, hov, selected);
             let cy = r[1] + r[3] / 2.0;
             let kind = fsops::kind_of(&row.name, row.is_dir);
             ui.glyph(r[0] + 20.0, cy, 18.0, kind.icon(), kind.tint(accent), 1.0);
@@ -484,7 +460,7 @@ impl ArchiveApp {
                 }
             }
         }
-        ui.pop_clip();
+        area.end(ui);
         if ui.click && inside(ui.mouse, list) && !clicked_row {
             self.sel.clear();
         }
@@ -664,15 +640,16 @@ impl ArchiveApp {
         // ---- what goes in
         heading(ui, PAD, y, "Contents");
         y += 12.0;
-        let room = h - BAR_H - y - 14.0;
-        let rows = ((room - 8.0) / 28.0).floor().max(1.0) as usize;
-        let shown = self.sources.len().min(rows);
-        let extra = self.sources.len().saturating_sub(shown);
-        let list_h = shown as f32 * 28.0 + 8.0 + if extra > 0 { 22.0 } else { 0.0 };
-        card(ui, [PAD, y, w - 2.0 * PAD, list_h.min(room.max(40.0))], 12.0);
+        // as tall as the items need, at most down to the bottom bar; more than that scrolls inside the card
+        let room = (h - BAR_H - y - 14.0).max(40.0);
+        let content = self.sources.len() as f32 * 28.0 + 8.0;
+        let card_r = [PAD, y, w - 2.0 * PAD, content.min(room)];
+        card(ui, card_r, 12.0);
         let srcs = self.sources.clone();
-        for (i, s) in srcs.iter().take(shown).enumerate() {
-            let ry = y + 4.0 + i as f32 * 28.0;
+        let area = widgets::scroll_area(ui, [card_r[0] + 1.0, card_r[1] + 1.0, card_r[2] - 2.0, card_r[3] - 2.0], content, &mut self.scroll);
+        for i in area.rows(28.0, srcs.len()) {
+            let s = &srcs[i];
+            let ry = area.y(3.0 + i as f32 * 28.0);
             let nm = s.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
             let kind = fsops::kind_of(&nm, s.is_dir());
             ui.glyph(PAD + 22.0, ry + 14.0, 16.0, kind.icon(), kind.tint(accent), 1.0);
@@ -680,9 +657,7 @@ impl ArchiveApp {
             ui.text_raw(PAD + 42.0, ry + 18.5, &nm, 13.0, false, ink, 0.9, Align::Left);
             ui.text_raw(w - PAD - 16.0, ry + 18.5, &human_size(size_of(s)), 12.0, false, ink, 0.5, Align::Right);
         }
-        if extra > 0 {
-            ui.text_raw(PAD + 18.0, y + 4.0 + shown as f32 * 28.0 + 15.0, &format!("and {extra} more…"), 12.0, false, ink, 0.5, Align::Left);
-        }
+        area.end(ui);
 
         self.bottom_bar(ui, size, "Compress");
     }
